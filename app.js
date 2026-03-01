@@ -650,21 +650,29 @@ app.get("/og/score.svg", (req, res) => {
 });
 
 app.get("/sitemap.xml", async (req, res) => {
+  const host = req.get("host") || req.headers["x-forwarded-host"];
+  const proto = req.headers["x-forwarded-proto"] || req.protocol || "https";
+  const runtimeSiteUrl = host ? `${proto}://${host}` : SITE_URL;
+  const staticUrls = [
+    `${runtimeSiteUrl}/`,
+    `${runtimeSiteUrl}/en-iyi-instagram-profilleri.html`,
+    `${runtimeSiteUrl}/ai-roast-ornekleri.html`,
+    `${runtimeSiteUrl}/hakkimizda.html`,
+    `${runtimeSiteUrl}/iletisim.html`,
+    `${runtimeSiteUrl}/gizlilik-politikasi.html`,
+    `${runtimeSiteUrl}/cerez-politikasi.html`,
+    `${runtimeSiteUrl}/kullanim-sartlari.html`,
+  ];
+
+  function renderSitemap(urls) {
+    const xmlItems = urls
+      .map((url) => `<url><loc>${escapeHtml(url)}</loc><changefreq>daily</changefreq><priority>0.8</priority></url>`)
+      .join("");
+    return `<?xml version="1.0" encoding="UTF-8"?><urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">${xmlItems}</urlset>`;
+  }
+
   try {
-    const host = req.get("host") || req.headers["x-forwarded-host"];
-    const proto = req.headers["x-forwarded-proto"] || req.protocol || "https";
-    const runtimeSiteUrl = host ? `${proto}://${host}` : SITE_URL;
     const all = await getAllRoasts();
-    const staticUrls = [
-      `${runtimeSiteUrl}/`,
-      `${runtimeSiteUrl}/en-iyi-instagram-profilleri.html`,
-      `${runtimeSiteUrl}/ai-roast-ornekleri.html`,
-      `${runtimeSiteUrl}/hakkimizda.html`,
-      `${runtimeSiteUrl}/iletisim.html`,
-      `${runtimeSiteUrl}/gizlilik-politikasi.html`,
-      `${runtimeSiteUrl}/cerez-politikasi.html`,
-      `${runtimeSiteUrl}/kullanim-sartlari.html`,
-    ];
     const dynamicSlugUrls = all.slice(0, 500).map((item) => `${runtimeSiteUrl}/roast/${item.slug}`);
     const dynamicUserUrls = all
       .map((item) => normalizeUsername(item.slugLabel))
@@ -672,17 +680,15 @@ app.get("/sitemap.xml", async (req, res) => {
       .slice(0, 500)
       .map((username) => `${runtimeSiteUrl}/roast/${username}`);
     const urls = [...new Set([...staticUrls, ...dynamicSlugUrls, ...dynamicUserUrls])];
-    const xmlItems = urls
-      .map(
-        (url) => `<url><loc>${escapeHtml(url)}</loc><changefreq>daily</changefreq><priority>0.8</priority></url>`
-      )
-      .join("");
-    const xml = `<?xml version="1.0" encoding="UTF-8"?><urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">${xmlItems}</urlset>`;
+    const xml = renderSitemap(urls);
     res.type("application/xml");
     return res.send(xml);
   } catch (error) {
     console.error(error);
-    return res.status(500).send("Sitemap olusturulamadi.");
+    // Always return a valid fallback sitemap so search crawlers do not mark the endpoint as unreachable.
+    const xml = renderSitemap(staticUrls);
+    res.type("application/xml");
+    return res.send(xml);
   }
 });
 
