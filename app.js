@@ -649,25 +649,28 @@ app.get("/og/score.svg", (req, res) => {
   return res.send(svg);
 });
 
-app.get("/sitemap.xml", async (_req, res) => {
+app.get("/sitemap.xml", async (req, res) => {
   try {
+    const host = req.headers["x-forwarded-host"] || req.get("host");
+    const proto = req.headers["x-forwarded-proto"] || req.protocol || "https";
+    const runtimeSiteUrl = host ? `${proto}://${host}` : SITE_URL;
     const all = await getAllRoasts();
     const staticUrls = [
-      `${SITE_URL}/`,
-      `${SITE_URL}/en-iyi-instagram-profilleri.html`,
-      `${SITE_URL}/ai-roast-ornekleri.html`,
-      `${SITE_URL}/hakkimizda.html`,
-      `${SITE_URL}/iletisim.html`,
-      `${SITE_URL}/gizlilik-politikasi.html`,
-      `${SITE_URL}/cerez-politikasi.html`,
-      `${SITE_URL}/kullanim-sartlari.html`,
+      `${runtimeSiteUrl}/`,
+      `${runtimeSiteUrl}/en-iyi-instagram-profilleri.html`,
+      `${runtimeSiteUrl}/ai-roast-ornekleri.html`,
+      `${runtimeSiteUrl}/hakkimizda.html`,
+      `${runtimeSiteUrl}/iletisim.html`,
+      `${runtimeSiteUrl}/gizlilik-politikasi.html`,
+      `${runtimeSiteUrl}/cerez-politikasi.html`,
+      `${runtimeSiteUrl}/kullanim-sartlari.html`,
     ];
-    const dynamicSlugUrls = all.slice(0, 500).map((item) => `${SITE_URL}/roast/${item.slug}`);
+    const dynamicSlugUrls = all.slice(0, 500).map((item) => `${runtimeSiteUrl}/roast/${item.slug}`);
     const dynamicUserUrls = all
       .map((item) => normalizeUsername(item.slugLabel))
       .filter(Boolean)
       .slice(0, 500)
-      .map((username) => `${SITE_URL}/roast/${username}`);
+      .map((username) => `${runtimeSiteUrl}/roast/${username}`);
     const urls = [...new Set([...staticUrls, ...dynamicSlugUrls, ...dynamicUserUrls])];
     const xmlItems = urls
       .map(
