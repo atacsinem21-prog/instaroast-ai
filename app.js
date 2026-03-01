@@ -3,6 +3,7 @@ const multer = require("multer");
 const dotenv = require("dotenv");
 const fs = require("fs/promises");
 const path = require("path");
+const crypto = require("crypto");
 const { GoogleGenerativeAI } = require("@google/generative-ai");
 const { createClient } = require("@supabase/supabase-js");
 
@@ -40,6 +41,7 @@ const SUPABASE_KEY = SUPABASE_SERVICE_ROLE_KEY || SUPABASE_PUBLISHABLE_KEY;
 const USE_SUPABASE = Boolean(SUPABASE_URL && SUPABASE_KEY);
 const supabase = USE_SUPABASE ? createClient(SUPABASE_URL, SUPABASE_KEY) : null;
 const memoryRoasts = [];
+const CACHE_WINDOW_HOURS = Math.max(1, Number(process.env.CACHE_WINDOW_HOURS || 24));
 
 function extractJson(text) {
   const fenced = text.match(/```json\s*([\s\S]*?)```/i);
@@ -81,6 +83,23 @@ function slugify(input) {
 function trimText(input, maxLength) {
   const text = String(input || "").replace(/\s+/g, " ").trim();
   return text.length > maxLength ? `${text.slice(0, maxLength - 3)}...` : text;
+}
+
+function normalizeText(input) {
+  return String(input || "").replace(/\s+/g, " ").trim();
+}
+
+function normalizeUsername(input) {
+  return String(input || "")
+    .trim()
+    .toLowerCase()
+    .replace(/^@+/, "")
+    .replace(/[^a-z0-9._]/g, "")
+    .slice(0, 30);
+}
+
+function hashBuffer(buffer) {
+  return crypto.createHash("sha256").update(buffer).digest("hex");
 }
 
 function escapeHtml(input) {
@@ -207,26 +226,58 @@ function makeCaseStudyPayload({ roast, flexScore }) {
     slug,
     slugLabel,
     title: buildCaseTitle({ slugLabel }),
-    roast: trimText(roast, 420),
+    roast: normalizeText(roast),
     flexScore: score,
     createdAt: new Date().toISOString(),
   };
 }
 
+function makeCaseStudyPayloadWithProfile({ roast, flexScore, username, imageHash }) {
+  const normalizedUser = normalizeUsername(username);
+  const base = makeCaseStudyPayload({ roast, flexScore });
+  if (!normalizedUser) {
+    return { ...base, imageHash: imageHash || null };
+  }
+
+  const userSlug = slugify(normalizedUser) || normalizedUser.replace(/\./g, "-");
+  return {
+    ...base,
+    slugLabel: normalizedUser,
+    slug: `${userSlug}-${Date.now().toString(36).slice(-4)}`,
+    title: `@${normalizedUser} Instagram Roast Analizi ve Flex Score`,
+    imageHash: imageHash || null,
+  };
+}
+
+function isWithinHours(isoDate, hours) {
+  const dateMs = new Date(isoDate).getTime();
+  if (!Number.isFinite(dateMs)) {
+    return false;
+  }
+  const diff = Date.now() - dateMs;
+  return diff >= 0 && diff <= hours * 60 * 60 * 1000;
+}
+
 async function saveCaseStudy(item) {
   if (USE_SUPABASE) {
-    const { error } = await supabase.from("roast_cases").upsert(
-      {
-        id: item.id,
-        slug: item.slug,
-        slug_label: item.slugLabel,
-        title: item.title,
-        roast: item.roast,
-        flex_score: item.flexScore,
-        created_at: item.createdAt,
-      },
-      { onConflict: "id" }
-    );
+    const basePayload = {
+      id: item.id,
+      slug: item.slug,
+      slug_label: item.slugLabel,
+      title: item.title,
+      roast: item.roast,
+      flex_score: item.flexScore,
+      created_at: item.createdAt,
+    };
+    let { error } = await supabase
+      .from("roast_cases")
+      .upsert({ ...basePayload, image_hash: item.imageHash || null }, { onConflict: "id" });
+
+    // Keep backward compatibility when old schemas do not have image_hash yet.
+    if (error && String(error.message || "").toLowerCase().includes("image_hash")) {
+      ({ error } = await supabase.from("roast_cases").upsert(basePayload, { onConflict: "id" }));
+    }
+
     if (!error) {
       return;
     }
@@ -337,6 +388,17 @@ function renderRoastPage(caseItem) {
       <article class="mt-6 rounded-xl border border-violet-400/40 bg-white/5 p-5 leading-relaxed text-violet-50">
         ${escapeHtml(caseItem.roast)}
       </article>
+      <section class="mt-6 rounded-xl border border-cyan-300/30 bg-cyan-500/5 p-5 text-sm leading-relaxed text-cyan-50">
+        <h2 class="text-lg font-bold text-cyan-100">Analiz Hakkinda</h2>
+        <p class="mt-2">
+          Bu sayfa, yuklenen profil ekran goruntusunun yapay zeka modeli tarafindan mizahi tonda yorumlanmasi ile
+          olusturulmustur. Analiz, profilde gorunen metin ve gorsel ipuclarina dayanir.
+        </p>
+        <p class="mt-2">
+          Sonuc eglenme amaclidir; gercek bir kisi degerlendirmesi, psikolojik test veya profesyonel gorus yerine gecmez.
+          Benzer profiller icin farkli zamanlarda farkli roast ciktilari uretebilir.
+        </p>
+      </section>
       <div class="mt-8 flex flex-wrap gap-3">
         <a class="rounded-lg bg-fuchsia-600 px-4 py-2 font-semibold" href="/">Kendi profilini roast et</a>
         <a class="rounded-lg border border-cyan-300/60 px-4 py-2 font-semibold" href="/?challenge=${caseItem.flexScore}">
@@ -365,6 +427,55 @@ async function generateWithFallback(genAI, parts) {
   }
 
   throw lastError || new Error("No compatible Gemini model found.");
+}
+
+async function findFreshCachedCase({ username, imageHash, maxAgeHours }) {
+  const normalizedUser = normalizeUsername(username);
+  const cutoffIso = new Date(Date.now() - maxAgeHours * 60 * 60 * 1000).toISOString();
+
+  if (USE_SUPABASE) {
+    if (normalizedUser) {
+      const { data, error } = await supabase
+        .from("roast_cases")
+        .select("id,slug,slug_label,title,roast,flex_score,created_at")
+        .eq("slug_label", normalizedUser)
+        .gte("created_at", cutoffIso)
+        .order("created_at", { ascending: false })
+        .limit(1);
+      if (!error && data?.length) {
+        return mapDbRowToCaseItem(data[0]);
+      }
+    }
+
+    if (imageHash) {
+      const { data, error } = await supabase
+        .from("roast_cases")
+        .select("id,slug,slug_label,title,roast,flex_score,created_at,image_hash")
+        .eq("image_hash", imageHash)
+        .gte("created_at", cutoffIso)
+        .order("created_at", { ascending: false })
+        .limit(1);
+      if (!error && data?.length) {
+        return mapDbRowToCaseItem(data[0]);
+      }
+    }
+  }
+
+  const local = await readRoasts();
+  const found = local.find((item) => {
+    const fresh = isWithinHours(item.createdAt, maxAgeHours);
+    if (!fresh) {
+      return false;
+    }
+    if (normalizedUser && normalizeUsername(item.slugLabel) === normalizedUser) {
+      return true;
+    }
+    if (imageHash && item.imageHash && item.imageHash === imageHash) {
+      return true;
+    }
+    return false;
+  });
+  return found || null;
 }
 
 app.get("/api/leaderboard", async (_req, res) => {
@@ -398,7 +509,12 @@ app.get("/api/leaderboard", async (_req, res) => {
 app.get("/roast/:slug", async (req, res) => {
   try {
     const all = await getAllRoasts();
-    const found = all.find((item) => item.slug === req.params.slug);
+    const requested = String(req.params.slug || "").toLowerCase();
+    const foundBySlug = all.find((item) => String(item.slug || "").toLowerCase() === requested);
+    const foundByUsername = all
+      .filter((item) => normalizeUsername(item.slugLabel) === normalizeUsername(requested))
+      .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())[0];
+    const found = foundBySlug || foundByUsername;
     if (!found) {
       return res.status(404).send("Roast case bulunamadi.");
     }
@@ -441,8 +557,13 @@ app.get("/sitemap.xml", async (_req, res) => {
       `${SITE_URL}/en-iyi-instagram-profilleri.html`,
       `${SITE_URL}/ai-roast-ornekleri.html`,
     ];
-    const dynamicUrls = all.slice(0, 500).map((item) => `${SITE_URL}/roast/${item.slug}`);
-    const urls = [...staticUrls, ...dynamicUrls];
+    const dynamicSlugUrls = all.slice(0, 500).map((item) => `${SITE_URL}/roast/${item.slug}`);
+    const dynamicUserUrls = all
+      .map((item) => normalizeUsername(item.slugLabel))
+      .filter(Boolean)
+      .slice(0, 500)
+      .map((username) => `${SITE_URL}/roast/${username}`);
+    const urls = [...new Set([...staticUrls, ...dynamicSlugUrls, ...dynamicUserUrls])];
     const xmlItems = urls
       .map(
         (url) => `<url><loc>${escapeHtml(url)}</loc><changefreq>daily</changefreq><priority>0.8</priority></url>`
@@ -468,6 +589,24 @@ app.post("/api/roast", upload.single("image"), async (req, res) => {
     if (!req.file) {
       return res.status(400).json({
         error: "Lutfen bir Instagram ekran goruntusu yukleyin.",
+      });
+    }
+
+    const imageHash = hashBuffer(req.file.buffer);
+    const username = normalizeUsername(req.body?.username || "");
+    const cached = await findFreshCachedCase({
+      username,
+      imageHash,
+      maxAgeHours: CACHE_WINDOW_HOURS,
+    });
+    if (cached) {
+      return res.json({
+        roast: cached.roast,
+        flexScore: cached.flexScore,
+        highlights: [],
+        caseStudyUrl: `/roast/${cached.slug}`,
+        challengeUrl: `/?challenge=${cached.flexScore}`,
+        cached: true,
       });
     }
 
@@ -516,9 +655,11 @@ app.post("/api/roast", upload.single("image"), async (req, res) => {
       parsed.flexScore = scoreMatch ? Math.min(100, Number(scoreMatch[1])) : null;
     }
 
-    const caseStudy = makeCaseStudyPayload({
+    const caseStudy = makeCaseStudyPayloadWithProfile({
       roast: parsed.roast || "Roast olusturulamadi.",
       flexScore: parsed.flexScore,
+      username,
+      imageHash,
     });
     await saveCaseStudy(caseStudy);
 

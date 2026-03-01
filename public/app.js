@@ -1,6 +1,8 @@
 ﻿const imageInput = document.getElementById("imageInput");
+const usernameInput = document.getElementById("usernameInput");
 const analyzeBtn = document.getElementById("analyzeBtn");
 const roastText = document.getElementById("roastText");
+const roastToggleBtn = document.getElementById("roastToggleBtn");
 const scoreText = document.getElementById("scoreText");
 const highlightsList = document.getElementById("highlights");
 const statusText = document.getElementById("status");
@@ -28,6 +30,9 @@ let lastResult = "";
 let lastCaseUrl = window.location.href;
 let lastScore = null;
 let shareImageBlob = null;
+let roastFullText = "";
+let roastExpanded = false;
+const ROAST_PREVIEW_MAX = 260;
 
 function sleep(ms) {
   return new Promise((resolve) => {
@@ -52,6 +57,40 @@ function sanitizeRoast(roast) {
 function trimText(input, maxLength) {
   const text = String(input || "").replace(/\s+/g, " ").trim();
   return text.length > maxLength ? `${text.slice(0, maxLength - 3)}...` : text;
+}
+
+function normalizeUsername(input) {
+  return String(input || "")
+    .trim()
+    .toLowerCase()
+    .replace(/^@+/, "")
+    .replace(/[^a-z0-9._]/g, "")
+    .slice(0, 30);
+}
+
+function renderRoastText() {
+  const full = String(roastFullText || "").trim();
+  if (!full) {
+    roastText.textContent = "Henuz analiz yok.";
+    roastToggleBtn.classList.add("hidden");
+    return;
+  }
+
+  const isLong = full.length > ROAST_PREVIEW_MAX;
+  if (!isLong) {
+    roastText.textContent = full;
+    roastToggleBtn.classList.add("hidden");
+    return;
+  }
+
+  if (roastExpanded) {
+    roastText.textContent = full;
+    roastToggleBtn.textContent = "Daha az goster";
+  } else {
+    roastText.textContent = trimText(full, ROAST_PREVIEW_MAX);
+    roastToggleBtn.textContent = "Devamini oku";
+  }
+  roastToggleBtn.classList.remove("hidden");
 }
 
 function readRecentRoasts() {
@@ -331,7 +370,11 @@ analyzeBtn.addEventListener("click", async () => {
   try {
     const optimized = await optimizeUploadImage(file);
     const formData = new FormData();
+    const normalizedUser = normalizeUsername(usernameInput?.value || "");
     formData.append("image", optimized, "profile.webp");
+    if (normalizedUser) {
+      formData.append("username", normalizedUser);
+    }
 
     const fetchPromise = fetch("/api/roast", {
       method: "POST",
@@ -347,7 +390,9 @@ analyzeBtn.addEventListener("click", async () => {
     }
 
     const safeScore = Number.isFinite(Number(data.flexScore)) ? Number(data.flexScore) : 0;
-    roastText.textContent = data.roast;
+    roastFullText = String(data.roast || "");
+    roastExpanded = false;
+    renderRoastText();
     scoreText.textContent = `${safeScore} / 100`;
     highlightsList.innerHTML = "";
     (data.highlights || []).forEach((item) => {
@@ -374,7 +419,9 @@ analyzeBtn.addEventListener("click", async () => {
     }
 
     progress.complete();
-    statusText.textContent = "Hazir. Sonucu paylasabilir veya case study linkini yayinlayabilirsin.";
+    statusText.textContent = data.cached
+      ? "Hazir. Bu sonuc son analizlerden cache'den getirildi, kota korunuyor."
+      : "Hazir. Sonucu paylasabilir veya case study linkini yayinlayabilirsin.";
     loadLeaderboards();
   } catch (error) {
     progress.fail();
@@ -382,6 +429,11 @@ analyzeBtn.addEventListener("click", async () => {
   } finally {
     analyzeBtn.disabled = false;
   }
+});
+
+roastToggleBtn.addEventListener("click", () => {
+  roastExpanded = !roastExpanded;
+  renderRoastText();
 });
 
 shareBtn.addEventListener("click", async () => {
