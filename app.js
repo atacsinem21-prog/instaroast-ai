@@ -33,7 +33,8 @@ const MODEL_CANDIDATES = [
 
 const DATA_DIR = process.env.VERCEL ? path.join("/tmp", "instaroast-data") : path.join(__dirname, "data");
 const ROAST_STORE = path.join(DATA_DIR, "roasts.json");
-const SITE_URL = (process.env.SITE_URL || "http://localhost:3000").replace(/\/$/, "");
+const DEFAULT_SITE_URL = process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : "http://localhost:3000";
+const SITE_URL = (process.env.SITE_URL || DEFAULT_SITE_URL).replace(/\/$/, "");
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
 const SUPABASE_PUBLISHABLE_KEY = process.env.SUPABASE_PUBLISHABLE_KEY;
