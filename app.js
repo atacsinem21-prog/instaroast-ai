@@ -40,8 +40,10 @@ const SUPABASE_PUBLISHABLE_KEY = process.env.SUPABASE_PUBLISHABLE_KEY;
 const SUPABASE_KEY = SUPABASE_SERVICE_ROLE_KEY || SUPABASE_PUBLISHABLE_KEY;
 const USE_SUPABASE = Boolean(SUPABASE_URL && SUPABASE_KEY);
 const supabase = USE_SUPABASE ? createClient(SUPABASE_URL, SUPABASE_KEY) : null;
+const SUPABASE_STORAGE_BUCKET = process.env.SUPABASE_STORAGE_BUCKET || "uploads";
 const memoryRoasts = [];
 const CACHE_WINDOW_HOURS = Math.max(1, Number(process.env.CACHE_WINDOW_HOURS || 24));
+let storageBucketChecked = false;
 
 function extractJson(text) {
   const fenced = text.match(/```json\s*([\s\S]*?)```/i);
@@ -100,6 +102,23 @@ function normalizeUsername(input) {
 
 function hashBuffer(buffer) {
   return crypto.createHash("sha256").update(buffer).digest("hex");
+}
+
+function getExtensionFromMimeType(mimeType) {
+  const value = String(mimeType || "").toLowerCase();
+  if (value.includes("png")) {
+    return "png";
+  }
+  if (value.includes("jpeg") || value.includes("jpg")) {
+    return "jpg";
+  }
+  if (value.includes("webp")) {
+    return "webp";
+  }
+  if (value.includes("gif")) {
+    return "gif";
+  }
+  return "bin";
 }
 
 function escapeHtml(input) {
@@ -186,6 +205,7 @@ function mapDbRowToCaseItem(row) {
     roast: row.roast,
     flexScore: row.flex_score,
     createdAt: row.created_at,
+    imageUrl: row.image_url || null,
   };
 }
 
@@ -269,13 +289,20 @@ async function saveCaseStudy(item) {
       flex_score: item.flexScore,
       created_at: item.createdAt,
     };
-    let { error } = await supabase
-      .from("roast_cases")
-      .upsert({ ...basePayload, image_hash: item.imageHash || null }, { onConflict: "id" });
+    const payloadVariants = [
+      { ...basePayload, image_hash: item.imageHash || null, image_url: item.imageUrl || null },
+      { ...basePayload, image_url: item.imageUrl || null },
+      { ...basePayload, image_hash: item.imageHash || null },
+      basePayload,
+    ];
 
-    // Keep backward compatibility when old schemas do not have image_hash yet.
-    if (error && String(error.message || "").toLowerCase().includes("image_hash")) {
-      ({ error } = await supabase.from("roast_cases").upsert(basePayload, { onConflict: "id" }));
+    let error = null;
+    for (const payload of payloadVariants) {
+      const result = await supabase.from("roast_cases").upsert(payload, { onConflict: "id" });
+      error = result.error;
+      if (!error) {
+        break;
+      }
     }
 
     if (!error) {
@@ -291,11 +318,19 @@ async function saveCaseStudy(item) {
 
 async function getAllRoasts() {
   if (USE_SUPABASE) {
-    const { data, error } = await supabase
+    let { data, error } = await supabase
       .from("roast_cases")
-      .select("id,slug,slug_label,title,roast,flex_score,created_at")
+      .select("id,slug,slug_label,title,roast,flex_score,created_at,image_url")
       .order("created_at", { ascending: false })
       .limit(1000);
+
+    if (error && String(error.message || "").toLowerCase().includes("image_url")) {
+      ({ data, error } = await supabase
+        .from("roast_cases")
+        .select("id,slug,slug_label,title,roast,flex_score,created_at")
+        .order("created_at", { ascending: false })
+        .limit(1000));
+    }
 
     if (!error) {
       return (data || []).map(mapDbRowToCaseItem);
@@ -427,6 +462,49 @@ async function generateWithFallback(genAI, parts) {
   }
 
   throw lastError || new Error("No compatible Gemini model found.");
+}
+
+async function ensureStorageBucket() {
+  if (!USE_SUPABASE || storageBucketChecked) {
+    return;
+  }
+  storageBucketChecked = true;
+
+  const { error } = await supabase.storage.createBucket(SUPABASE_STORAGE_BUCKET, {
+    public: false,
+  });
+  if (error && !String(error.message || "").toLowerCase().includes("already exists")) {
+    console.error("Supabase bucket check/create failed:", error.message);
+  }
+}
+
+async function uploadImageToSupabaseStorage({ file, caseId, imageHash, username }) {
+  if (!USE_SUPABASE || !file?.buffer || !SUPABASE_STORAGE_BUCKET) {
+    return null;
+  }
+
+  await ensureStorageBucket();
+
+  const ext = getExtensionFromMimeType(file.mimetype);
+  const day = new Date().toISOString().slice(0, 10);
+  const userPart = normalizeUsername(username) || "anon";
+  const hashPart = String(imageHash || "").slice(0, 12) || "nohash";
+  const objectPath = `roasts/${day}/${userPart}-${caseId}-${hashPart}.${ext}`;
+
+  const { error: uploadError } = await supabase.storage.from(SUPABASE_STORAGE_BUCKET).upload(objectPath, file.buffer, {
+    contentType: file.mimetype || "application/octet-stream",
+    upsert: false,
+  });
+  if (uploadError) {
+    console.error("Supabase storage upload failed:", uploadError.message);
+    return null;
+  }
+
+  const { data } = supabase.storage.from(SUPABASE_STORAGE_BUCKET).getPublicUrl(objectPath);
+  if (data?.publicUrl) {
+    return data.publicUrl;
+  }
+  return `${SUPABASE_STORAGE_BUCKET}/${objectPath}`;
 }
 
 async function findFreshCachedCase({ username, imageHash, maxAgeHours }) {
@@ -660,6 +738,12 @@ app.post("/api/roast", upload.single("image"), async (req, res) => {
       flexScore: parsed.flexScore,
       username,
       imageHash,
+    });
+    caseStudy.imageUrl = await uploadImageToSupabaseStorage({
+      file: req.file,
+      caseId: caseStudy.id,
+      imageHash,
+      username,
     });
     await saveCaseStudy(caseStudy);
 
