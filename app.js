@@ -30,7 +30,7 @@ const MODEL_CANDIDATES = [
   "gemini-1.5-flash",
 ].filter(Boolean);
 
-const DATA_DIR = path.join(__dirname, "data");
+const DATA_DIR = process.env.VERCEL ? path.join("/tmp", "instaroast-data") : path.join(__dirname, "data");
 const ROAST_STORE = path.join(DATA_DIR, "roasts.json");
 const SITE_URL = (process.env.SITE_URL || "http://localhost:3000").replace(/\/$/, "");
 const SUPABASE_URL = process.env.SUPABASE_URL;
@@ -39,6 +39,7 @@ const SUPABASE_PUBLISHABLE_KEY = process.env.SUPABASE_PUBLISHABLE_KEY;
 const SUPABASE_KEY = SUPABASE_SERVICE_ROLE_KEY || SUPABASE_PUBLISHABLE_KEY;
 const USE_SUPABASE = Boolean(SUPABASE_URL && SUPABASE_KEY);
 const supabase = USE_SUPABASE ? createClient(SUPABASE_URL, SUPABASE_KEY) : null;
+const memoryRoasts = [];
 
 function extractJson(text) {
   const fenced = text.match(/```json\s*([\s\S]*?)```/i);
@@ -92,18 +93,33 @@ function escapeHtml(input) {
 }
 
 async function ensureStore() {
-  await fs.mkdir(DATA_DIR, { recursive: true });
   try {
+    await fs.mkdir(DATA_DIR, { recursive: true });
     await fs.access(ROAST_STORE);
+    return true;
   } catch {
-    await fs.writeFile(ROAST_STORE, "[]", "utf8");
+    // Read-only environments (serverless) can fail here; caller can use memory fallback.
+    return false;
   }
 }
 
+function readMemoryRoasts() {
+  return [...memoryRoasts];
+}
+
+function writeMemoryRoasts(items) {
+  memoryRoasts.length = 0;
+  memoryRoasts.push(...items);
+}
+
 async function readRoasts() {
-  await ensureStore();
-  const raw = await fs.readFile(ROAST_STORE, "utf8");
+  const storageReady = await ensureStore();
+  if (!storageReady) {
+    return readMemoryRoasts();
+  }
+
   try {
+    const raw = await fs.readFile(ROAST_STORE, "utf8");
     const parsed = JSON.parse(raw);
     return Array.isArray(parsed) ? parsed : [];
   } catch {
@@ -112,9 +128,35 @@ async function readRoasts() {
 }
 
 async function writeRoasts(items) {
-  await ensureStore();
-  await fs.writeFile(ROAST_STORE, JSON.stringify(items, null, 2), "utf8");
+  const storageReady = await ensureStore();
+  if (!storageReady) {
+    writeMemoryRoasts(items);
+    return;
+  }
+
+  try {
+    await fs.writeFile(ROAST_STORE, JSON.stringify(items, null, 2), "utf8");
+  } catch {
+    writeMemoryRoasts(items);
+  }
 }
+
+async function initializeLocalStore() {
+  const storageReady = await ensureStore();
+  if (!storageReady) {
+    return;
+  }
+
+  try {
+    await fs.access(ROAST_STORE);
+  } catch {
+    await fs.writeFile(ROAST_STORE, "[]", "utf8");
+  }
+}
+
+initializeLocalStore().catch(() => {
+  // Ignore init errors in serverless/runtime-restricted environments.
+});
 
 function mapDbRowToCaseItem(row) {
   return {
