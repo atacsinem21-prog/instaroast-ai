@@ -316,6 +316,27 @@ async function saveCaseStudy(item) {
   await writeRoasts(next);
 }
 
+async function attachImageMetaToCase(caseId, imageUrl, imageHash) {
+  if (!USE_SUPABASE || !caseId) {
+    return false;
+  }
+
+  const updates = [
+    { image_url: imageUrl || null, image_hash: imageHash || null },
+    { image_url: imageUrl || null },
+    { image_hash: imageHash || null },
+  ];
+
+  for (const values of updates) {
+    const { error } = await supabase.from("roast_cases").update(values).eq("id", caseId);
+    if (!error) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
 async function getAllRoasts() {
   if (USE_SUPABASE) {
     let { data, error } = await supabase
@@ -515,7 +536,7 @@ async function findFreshCachedCase({ username, imageHash, maxAgeHours }) {
     if (normalizedUser) {
       const { data, error } = await supabase
         .from("roast_cases")
-        .select("id,slug,slug_label,title,roast,flex_score,created_at")
+        .select("id,slug,slug_label,title,roast,flex_score,created_at,image_url,image_hash")
         .eq("slug_label", normalizedUser)
         .gte("created_at", cutoffIso)
         .order("created_at", { ascending: false })
@@ -528,7 +549,7 @@ async function findFreshCachedCase({ username, imageHash, maxAgeHours }) {
     if (imageHash) {
       const { data, error } = await supabase
         .from("roast_cases")
-        .select("id,slug,slug_label,title,roast,flex_score,created_at,image_hash")
+        .select("id,slug,slug_label,title,roast,flex_score,created_at,image_url,image_hash")
         .eq("image_hash", imageHash)
         .gte("created_at", cutoffIso)
         .order("created_at", { ascending: false })
@@ -678,12 +699,26 @@ app.post("/api/roast", upload.single("image"), async (req, res) => {
       maxAgeHours: CACHE_WINDOW_HOURS,
     });
     if (cached) {
+      let imageUrl = cached.imageUrl || null;
+      if (!imageUrl) {
+        imageUrl = await uploadImageToSupabaseStorage({
+          file: req.file,
+          caseId: cached.id,
+          imageHash,
+          username: cached.slugLabel || username,
+        });
+        if (imageUrl) {
+          await attachImageMetaToCase(cached.id, imageUrl, imageHash);
+        }
+      }
+
       return res.json({
         roast: cached.roast,
         flexScore: cached.flexScore,
         highlights: [],
         caseStudyUrl: `/roast/${cached.slug}`,
         challengeUrl: `/?challenge=${cached.flexScore}`,
+        imageUrl,
         cached: true,
       });
     }
@@ -753,6 +788,7 @@ app.post("/api/roast", upload.single("image"), async (req, res) => {
       highlights: Array.isArray(parsed.highlights) ? parsed.highlights.slice(0, 3) : [],
       caseStudyUrl: `/roast/${caseStudy.slug}`,
       challengeUrl: `/?challenge=${caseStudy.flexScore}`,
+      imageUrl: caseStudy.imageUrl || null,
     });
   } catch (error) {
     console.error(error);
