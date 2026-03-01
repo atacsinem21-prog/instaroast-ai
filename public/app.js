@@ -17,8 +17,12 @@ const sharePreviewHint = document.getElementById("sharePreviewHint");
 const recentRoastsList = document.getElementById("recentRoasts");
 const topFlexList = document.getElementById("topFlexList");
 const mostRoastedList = document.getElementById("mostRoastedList");
+const cookieBanner = document.getElementById("cookieBanner");
+const cookieAcceptBtn = document.getElementById("cookieAcceptBtn");
+const cookieRejectBtn = document.getElementById("cookieRejectBtn");
 
 const RECENT_ROASTS_KEY = "instaroast_recent_roasts_v1";
+const COOKIE_PREF_KEY = "instaroast_cookie_pref_v1";
 const PROGRESS_MESSAGES = [
   "AI profilini inceliyor...",
   "Bio'daki iddialar analiz ediliyor...",
@@ -66,6 +70,43 @@ function normalizeUsername(input) {
     .replace(/^@+/, "")
     .replace(/[^a-z0-9._]/g, "")
     .slice(0, 30);
+}
+
+function getCookiePreference() {
+  try {
+    return localStorage.getItem(COOKIE_PREF_KEY);
+  } catch (_error) {
+    return null;
+  }
+}
+
+function setCookiePreference(value) {
+  try {
+    localStorage.setItem(COOKIE_PREF_KEY, value);
+  } catch (_error) {
+    // Ignore storage write issues in privacy or blocked modes.
+  }
+}
+
+function setupCookieBanner() {
+  if (!cookieBanner || !cookieAcceptBtn || !cookieRejectBtn) {
+    return;
+  }
+
+  const preference = getCookiePreference();
+  if (preference !== "accepted" && preference !== "rejected") {
+    cookieBanner.classList.remove("hidden");
+  }
+
+  cookieAcceptBtn.addEventListener("click", () => {
+    setCookiePreference("accepted");
+    cookieBanner.classList.add("hidden");
+  });
+
+  cookieRejectBtn.addEventListener("click", () => {
+    setCookiePreference("rejected");
+    cookieBanner.classList.add("hidden");
+  });
 }
 
 function renderRoastText() {
@@ -494,3 +535,4 @@ challengeBtn.addEventListener("click", () => {
 renderRecentRoasts();
 loadLeaderboards();
 applyChallengeHintFromQuery();
+setupCookieBanner();

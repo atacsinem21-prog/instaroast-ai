@@ -655,6 +655,11 @@ app.get("/sitemap.xml", async (_req, res) => {
       `${SITE_URL}/`,
       `${SITE_URL}/en-iyi-instagram-profilleri.html`,
       `${SITE_URL}/ai-roast-ornekleri.html`,
+      `${SITE_URL}/hakkimizda.html`,
+      `${SITE_URL}/iletisim.html`,
+      `${SITE_URL}/gizlilik-politikasi.html`,
+      `${SITE_URL}/cerez-politikasi.html`,
+      `${SITE_URL}/kullanim-sartlari.html`,
     ];
     const dynamicSlugUrls = all.slice(0, 500).map((item) => `${SITE_URL}/roast/${item.slug}`);
     const dynamicUserUrls = all
