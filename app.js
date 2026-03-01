@@ -651,7 +651,7 @@ app.get("/og/score.svg", (req, res) => {
 
 app.get("/sitemap.xml", async (req, res) => {
   try {
-    const host = req.headers["x-forwarded-host"] || req.get("host");
+    const host = req.get("host") || req.headers["x-forwarded-host"];
     const proto = req.headers["x-forwarded-proto"] || req.protocol || "https";
     const runtimeSiteUrl = host ? `${proto}://${host}` : SITE_URL;
     const all = await getAllRoasts();
