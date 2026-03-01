@@ -2,3 +2,4 @@
 Allow: /
 
 Sitemap: https://flexscore-ai.vercel.app/sitemap.xml
+Sitemap: https://flexscore-ai.vercel.app/sitemap-main.xml
